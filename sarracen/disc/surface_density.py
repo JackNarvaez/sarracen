@@ -2,8 +2,7 @@ import numpy as np
 import pandas as pd
 from ..sarracen_dataframe import SarracenDataFrame
 from .utils import _get_mass, _get_origin
-from .utils import _bin_particles_by_radius, _get_bin_midpoints
-
+from .utils import _bin_particles_by_radius, _bin_particles_2D, _get_bin_midpoints
 
 def azimuthal_average(data: 'SarracenDataFrame',
                       target: str,
@@ -68,7 +67,142 @@ def azimuthal_average(data: 'SarracenDataFrame',
         return result, _get_bin_midpoints(bin_edges, log)
     else:
         return result
+    
+def azimuthal_average_2D(data: 'SarracenDataFrame',
+                        target: str,
+                        r_in: float = None,
+                        r_out: float = None,
+                        th_max: float = None,
+                        r_bins: int = 300,
+                        th_bins: int = 300,
+                        log: bool = False,
+                        origin: list = None,
+                        retbins: bool = False):
+    """
+    Calculates the 2D azimuthally-averaged profile for a target quantity.
 
+    The profile is computed by segmenting the particles into radial and 
+    polar angle bins (in spherical coordinates) and taking the mean of the
+    target quantity from the particles within each cell.
+
+    Parameters
+    ----------
+    data : SarracenDataFrame
+        Particle data, in a SarracenDataFrame.
+    target : str
+        Column label of the target smoothing data.
+    r_in : float, optional
+        Inner radius of the disc. Defaults to the minimum r value.
+    r_out : float, optional
+        Outer radius of the disc. Defaults to the maximum r value.
+    th_max: float, optional
+            Maximum polar angle with respect to the midplane. Defaults to pi/2.
+    rbins : int, optional
+        Defines the number of equal-width bins in the range [r_in, r_out].
+        Default is 300.
+    thbins : int, optional
+        Defines the number of equal-width bins in the range [pi/2 - zmax, pi/2 + zmax].
+        Default is 300.
+    log : bool, optional
+        Whether to radial bin in log scale or not. Defaults to False.
+    origin : array-like, optional
+        The x, y and z centre point around which to compute radii. Defaults to
+        [0, 0, 0].
+    retbins : bool, optional
+        Whether to return the midpoints of the bins or not. Defaults to False.
+
+    Returns
+    -------
+    array
+        A NumPy 2D array of length bins containing the averaged profile.
+    array, optional
+        The midpoint values of each radial bin. Only returned if *retbins=True*.
+    array, optional
+        The midpoint values of each polar bin. Only returned if *retbins=True*.
+
+    Raises
+    ------
+    ValueError
+        If the th_max angle is negative or larger than pi/2.
+    """
+
+    origin = _get_origin(origin)
+    rbins, thbins, r_bin_edges, th_bin_edges = _bin_particles_2D(data, r_in, r_out, th_max, r_bins, th_bins,
+                                                log, origin)
+
+    result = data[target].groupby([rbins, thbins]).mean().unstack().fillna(0).to_numpy().T
+
+    if retbins:
+        return result, _get_bin_midpoints(r_bin_edges, log), _get_bin_midpoints(th_bin_edges, False)
+    else:
+        return result
+    
+def azimuthal_deviations(data: 'SarracenDataFrame',
+                        target: str,
+                        r_in: float = None,
+                        r_out: float = None,
+                        th_max: float = None,
+                        r_bins: int = 300,
+                        th_bins: int = 300,
+                        log: bool = False,
+                        origin: list = None):
+    """
+    Calculates the 2D azimuthally-averaged profile for a target quantity.
+
+    The profile is computed by segmenting the particles into radial and 
+    polar angle bins (in spherical coordinates) and taking the mean of the
+    target quantity from the particles within each cell.
+
+    Parameters
+    ----------
+    data : SarracenDataFrame
+        Particle data, in a SarracenDataFrame.
+    target : str
+        Column label of the target smoothing data.
+    r_in : float, optional
+        Inner radius of the disc. Defaults to the minimum r value.
+    r_out : float, optional
+        Outer radius of the disc. Defaults to the maximum r value.
+    th_max: float, optional
+            Maximum polar angle with respect to the midplane. Defaults to pi/2.
+    rbins : int, optional
+        Defines the number of equal-width bins in the range [r_in, r_out].
+        Default is 300.
+    thbins : int, optional
+        Defines the number of equal-width bins in the range [pi/2 - zmax, pi/2 + zmax].
+        Default is 300.
+    log : bool, optional
+        Whether to radial bin in log scale or not. Defaults to False.
+    origin : array-like, optional
+        The x, y and z centre point around which to compute radii. Defaults to
+        [0, 0, 0].
+
+    Returns
+    -------
+    array
+        A NumPy 2D array of length bins containing the averaged profile.
+    array, optional
+        The midpoint values of each radial bin. Only returned if *retbins=True*.
+    array, optional
+        The midpoint values of each polar bin. Only returned if *retbins=True*.
+
+    Raises
+    ------
+    ValueError
+        If the th_max angle is negative or larger than pi/2.
+    """
+
+    origin = _get_origin(origin)
+    rbins, thbins, _, _ = _bin_particles_2D(data, r_in, r_out, th_max, r_bins, th_bins,
+                                            log, origin)
+
+    avg = data[target].groupby([rbins, thbins]).mean()
+    avg.dropna(inplace=True)
+    vbins = ~rbins.isna() & ~thbins.isna()
+    devs = data[target].copy()
+    devs[vbins] -= avg.loc[zip(rbins[vbins], thbins[vbins])].values
+
+    return devs.to_numpy()
 
 def surface_density(data: 'SarracenDataFrame',
                     r_in: float = None,
@@ -170,8 +304,6 @@ def _calc_angular_momentum(data: 'SarracenDataFrame',
         The x, y and z components of the angular momentum per bin.
     """
 
-    mass = _get_mass(data)
-
     x_data = data[data.xcol].to_numpy() - origin[0]
     y_data = data[data.ycol].to_numpy() - origin[1]
     z_data = data[data.zcol].to_numpy() - origin[2]
@@ -180,14 +312,9 @@ def _calc_angular_momentum(data: 'SarracenDataFrame',
     Ly = z_data * data[data.vxcol] - x_data * data[data.vzcol]
     Lz = x_data * data[data.vycol] - y_data * data[data.vxcol]
 
-    if isinstance(mass, float):
-        Lx = (mass * Lx).groupby(rbins).sum()
-        Ly = (mass * Ly).groupby(rbins).sum()
-        Lz = (mass * Lz).groupby(rbins).sum()
-    else:
-        Lx = (data[data.mcol] * Lx).groupby(rbins).sum()
-        Ly = (data[data.mcol] * Ly).groupby(rbins).sum()
-        Lz = (data[data.mcol] * Lz).groupby(rbins).sum()
+    Lx = (Lx).groupby(rbins).mean()
+    Ly = (Ly).groupby(rbins).mean()
+    Lz = (Lz).groupby(rbins).mean()
 
     if unit_vector:
         Lmag = 1.0 / np.sqrt(Lx ** 2 + Ly ** 2 + Lz ** 2)
@@ -284,6 +411,7 @@ def _calc_scale_height(data: 'SarracenDataFrame',
     H: Series
         The scale height of the disc.
     """
+
     Lx, Ly, Lz = _calc_angular_momentum(data, rbins, origin, unit_vector=True)
 
     zdash = rbins.map(Lx).to_numpy() * data[data.xcol] \
@@ -349,7 +477,6 @@ def scale_height(data: 'SarracenDataFrame',
     --------
     :func:`angular_momentum` : Calculate the disc angular momentum profile.
     """
-
     origin = _get_origin(origin)
     rbins, bin_edges = _bin_particles_by_radius(data, r_in, r_out, bins, log,
                                                 geometry, origin)
@@ -423,7 +550,6 @@ def honH(data: 'SarracenDataFrame',
                                                 geometry, origin)
 
     H = _calc_scale_height(data, rbins, origin).to_numpy()
-
     mean_h = data.groupby(rbins)[data.hcol].mean().to_numpy()
 
     if retbins:

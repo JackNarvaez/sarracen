@@ -527,7 +527,7 @@ def interpolate_2d(data: 'SarracenDataFrame',  # noqa: F821
         If `target`, `x`, `y`, mass, density, or smoothing length columns do
         not exist in `data`.
     """
-    _check_dimension(data, 2)
+    #_check_dimension(data, 2)
     x, y = _default_xy(data, x, y)
     _verify_columns(data, x, y)
 

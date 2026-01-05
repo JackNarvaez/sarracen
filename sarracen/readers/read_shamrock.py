@@ -72,7 +72,7 @@ class FileReader:
 
         Returns
         -------
-        data
+        bytes
             The data read from the file.
 
         Raises
@@ -267,7 +267,7 @@ class ShamrockDumpReader:
 
 def read_shamrock(filename: str) -> SarracenDataFrame:
     """
-    Read a Shamrock native binary format dump file.
+    Read data from a Shamrock native binary format dump file.
 
     Parameters
     ----------

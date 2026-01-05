@@ -128,9 +128,15 @@ def surface_density(data: 'SarracenDataFrame',
     Notes
     -----
     The surface density averaging procedure for SPH is described in section
-    3.2.6 of Lodato & Price, MNRAS (2010),
-    `doi:10.1111/j.1365-2966.2010.16526.x
-    <https://doi.org/10.1111/j.1365-2966.2010.16526.x>`_.
+    3.2.6 of Lodato & Price (2010) [1]_.
+
+    References
+    ----------
+    .. [1] G. Lodato & D. J. Price, "On the diffusive propagation of warps in
+       thin accretion discs," MNRAS, 405, 2, 1212-1226 (2010).
+       `doi:10.1111/j.1365-2966.2010.16526.x
+       <https://doi.org/10.1111/j.1365-2966.2010.16526.x>`_
+
     """
 
     origin = _get_origin(origin)
@@ -239,6 +245,9 @@ def angular_momentum(data: 'SarracenDataFrame',
         [0, 0, 0].
     retbins : bool, optional
         Whether to return the midpoints of the bins or not. Defaults to False.
+    unit_vector: bool, optional
+        Whether to convert the angular momentum to unit vectors.
+        Default is True.
 
     Returns
     -------
@@ -290,7 +299,7 @@ def _calc_scale_height(data: 'SarracenDataFrame',
 
     Returns
     -------
-    H: Series
+    Series
         The scale height of the disc.
     """
 

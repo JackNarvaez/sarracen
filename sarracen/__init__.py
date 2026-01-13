@@ -22,7 +22,7 @@ from .writers.write_phantom import write_phantom
 from .sarracen_dataframe import SarracenDataFrame
 
 from .interpolate import interpolate_2d, interpolate_2d_line, \
-    interpolate_3d_proj, interpolate_3d_cross
+    interpolate_3d_proj, interpolate_3d_cross, interpolate_3d_grid
 from .render import render, streamlines, arrowplot
 
 from . import disc
@@ -35,4 +35,5 @@ __all__ = ["read_csv", "read_gasoline", "read_gradsph", "read_marisa",
            "read_shamrock_vtk", "write_phantom",
            "SarracenDataFrame", "disc", "ptmass",
            "interpolate_2d", "interpolate_2d_line", "interpolate_3d_proj",
-           "interpolate_3d_cross", "render", "streamlines", "arrowplot"]
+           "interpolate_3d_cross", "interpolate_3d_grid", "render",
+           "streamlines", "arrowplot"]

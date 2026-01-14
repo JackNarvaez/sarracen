@@ -219,9 +219,250 @@ class CPUBackend(BaseBackend):
 
         return image
 
+    @staticmethod
+    def interpolate_3d_mesh(x1: ndarray,
+                            x2: ndarray,
+                            x3: ndarray,
+                            weight: ndarray,
+                            h: ndarray,
+                            weight_function: CPUDispatcher,
+                            kernel_radius: float,
+                            geometry: int,
+                            x1_pixels: int,
+                            x2_pixels: int,
+                            x3_pixels: int,
+                            x1_min: float,
+                            x1_max: float,
+                            x2_min: float,
+                            x2_max: float,
+                            x3_min: float,
+                            x3_max: float) -> ndarray:
+        image = np.zeros((x3_pixels, x2_pixels, x1_pixels))
+        pixwidthx3 = (x3_max - x3_min) / x3_pixels
+
+        if geometry == 0:
+            for x3_i in np.arange(x3_pixels):
+                x3_val = x3_min + (x3_i + 0.5) * pixwidthx3
+                image[x3_i] = CPUBackend._fast_2d(
+                                x1, x2, x3, x3_val, weight, h,
+                                weight_function, kernel_radius,
+                                x1_pixels, x2_pixels,
+                                x1_min, x1_max, x2_min, x2_max, 3)
+        elif geometry == 1:
+            for x3_i in np.arange(x3_pixels):
+                x3_val = x3_min + (x3_i + 0.5) * pixwidthx3
+                image[x3_i] = CPUBackend._fast_2d_cyl(
+                                x1, x2, x3, x3_val, weight, h,
+                                weight_function, kernel_radius,
+                                x1_pixels, x2_pixels,
+                                x1_min, x1_max, x2_min, x2_max, 3)
+        else:
+            for x3_i in np.arange(x3_pixels):
+                x3_val = x3_min + (x3_i + 0.5) * pixwidthx3
+                image[x3_i] = CPUBackend._fast_2d_sph(
+                                x1, x2, x3, x3_val, weight, h,
+                                weight_function, kernel_radius,
+                                x1_pixels, x2_pixels,
+                                x1_min, x1_max, x2_min, x2_max, 3)
+
+        return image
+
     # Underlying CPU numba-compiled code for interpolation to a 2D grid. Used
     # in interpolation of 2D data, and column integration / cross-sections of
     # 3D data.
+
+    @staticmethod
+    @njit(parallel=True, fastmath=True)
+    def _fast_2d_sph(x1_data: ndarray,
+                     x2_data: ndarray,
+                     x3_data: ndarray,
+                     x3_slice: float,
+                     w_data: ndarray,
+                     h_data: ndarray,
+                     weight_function: CPUDispatcher,
+                     kernel_radius: float,
+                     x1_pixels: int,
+                     x2_pixels: int,
+                     x1_min: float,
+                     x1_max: float,
+                     x2_min: float,
+                     x2_max: float,
+                     n_dims: int) -> ndarray:
+
+        output = np.zeros((x2_pixels, x1_pixels))
+        pixwidthx1 = (x1_max - x1_min) / x1_pixels
+        pixwidthx2 = (x2_max - x2_min) / x2_pixels
+
+        if not n_dims == 2:
+            dx3 = np.subtract(np.float64(x3_slice), x3_data)
+        else:
+            dx3 = np.zeros(x1_data.size)
+
+        term = w_data / h_data ** n_dims
+        output_local = np.zeros((get_num_threads(), x2_pixels, x1_pixels))
+
+        # thread safety:
+        # each thread has its own grid, which are combined after interpolation
+        for thread in prange(get_num_threads()):
+            block_size = x1_data.size / get_num_threads()
+            range_start = int(thread * block_size)
+            range_end = int((thread + 1) * block_size)
+
+            # iterate through the indexes of non-filtered particles
+            for i in range(range_start, range_end):
+                if np.abs(dx3[i]) >= kernel_radius * h_data[i]:
+                    continue
+                rad = kernel_radius * h_data[i]
+
+                # Convert physical radius to angular extents
+                drad1 = rad/(x3_data[i]*np.sin(x2_data[i]))
+                drad2 = rad/x3_data[i]
+
+                # determine pixels that this particle contributes to
+                ipixmin = int(np.rint((x1_data[i]-drad1-x1_min)/pixwidthx1))
+                jpixmin = int(np.rint((x2_data[i]-drad2-x2_min)/pixwidthx2))
+                ipixmax = int(np.rint((x1_data[i]+drad1-x1_min)/pixwidthx1))
+                jpixmax = int(np.rint((x2_data[i]+drad2-x2_min)/pixwidthx2))
+
+                if ipixmax < 0 or ipixmin > x1_pixels:
+                    continue
+                if jpixmax < 0 or jpixmin > x2_pixels:
+                    continue
+                if ipixmin < 0:
+                    ipixmin = 0
+                if ipixmax > x1_pixels:
+                    ipixmax = x1_pixels
+                if jpixmin < 0:
+                    jpixmin = 0
+                if jpixmax > x2_pixels:
+                    jpixmax = x2_pixels
+
+                # precalculate differences (optimization)
+                x1pix = x1_min+(np.arange(ipixmin, ipixmax)+0.5)*pixwidthx1
+                x2pix = x2_min+(np.arange(jpixmin, jpixmax)+0.5)*pixwidthx2
+
+                x3_2 = x3_slice*x3_slice + x3_data[i]*x3_data[i]
+                x3_12 = x3_slice*x3_data[i]
+                dx1 = (x1pix - x1_data[i]).reshape(1, x1pix.size)
+
+                sinthe = np.sin(x2pix) * np.sin(x2_data[i])
+                costhe = np.cos(x2pix) * np.cos(x2_data[i])
+
+                sinthe = sinthe.reshape(x2pix.size, 1)
+                costhe = costhe.reshape(x2pix.size, 1)
+
+                r2 = x3_2 - 2.0 * x3_12 * (sinthe * np.cos(dx1) + costhe)
+
+                h1i = 1.0/h_data[i]
+                q = np.sqrt(r2)*h1i
+
+                for jpix in range(jpixmax - jpixmin):
+                    for ipix in range(ipixmax - ipixmin):
+                        if q[jpix][ipix] > kernel_radius:
+                            continue
+                        wab = weight_function(q[jpix][ipix], n_dims)
+                        jp = jpix + jpixmin
+                        ip = ipix + ipixmin
+                        output_local[thread][jp, ip] += term[i] * wab
+
+        for i in range(get_num_threads()):
+            output += output_local[i]
+
+        return output
+
+    @staticmethod
+    @njit(parallel=True, fastmath=True)
+    def _fast_2d_cyl(x1_data: ndarray,
+                     x2_data: ndarray,
+                     x3_data: ndarray,
+                     x3_slice: float,
+                     w_data: ndarray,
+                     h_data: ndarray,
+                     weight_function: CPUDispatcher,
+                     kernel_radius: float,
+                     x1_pixels: int,
+                     x2_pixels: int,
+                     x1_min: float,
+                     x1_max: float,
+                     x2_min: float,
+                     x2_max: float,
+                     n_dims: int) -> ndarray:
+
+        output = np.zeros((x2_pixels, x1_pixels))
+        pixwidthx1 = (x1_max - x1_min) / x1_pixels
+        pixwidthx2 = (x2_max - x2_min) / x2_pixels
+
+        if not n_dims == 2:
+            dx3 = np.subtract(np.float64(x3_slice), x3_data)
+        else:
+            dx3 = np.zeros(x1_data.size)
+
+        term = w_data / h_data ** n_dims
+        output_local = np.zeros((get_num_threads(), x2_pixels, x1_pixels))
+
+        # thread safety:
+        # each thread has its own grid, which are combined after interpolation
+        for thread in prange(get_num_threads()):
+            block_size = x1_data.size / get_num_threads()
+            range_start = int(thread * block_size)
+            range_end = int((thread + 1) * block_size)
+
+            # iterate through the indexes of non-filtered particles
+            for i in range(range_start, range_end):
+                if np.abs(dx3[i]) >= kernel_radius * h_data[i]:
+                    continue
+                rad = kernel_radius * h_data[i]
+
+                # Convert physical radius to angular extents
+                drad1 = rad/x3_data[i]
+                drad2 = rad
+
+                # determine pixels that this particle contributes to
+                ipixmin = int(np.rint((x1_data[i]-drad1-x1_min)/pixwidthx1))
+                jpixmin = int(np.rint((x2_data[i]-drad2-x2_min)/pixwidthx2))
+                ipixmax = int(np.rint((x1_data[i]+drad1-x1_min)/pixwidthx1))
+                jpixmax = int(np.rint((x2_data[i]+drad2-x2_min)/pixwidthx2))
+
+                if ipixmax < 0 or ipixmin > x1_pixels:
+                    continue
+                if jpixmax < 0 or jpixmin > x2_pixels:
+                    continue
+                if ipixmin < 0:
+                    ipixmin = 0
+                if ipixmax > x1_pixels:
+                    ipixmax = x1_pixels
+                if jpixmin < 0:
+                    jpixmin = 0
+                if jpixmax > x2_pixels:
+                    jpixmax = x2_pixels
+
+                # precalculate differences (optimization)
+                x1pix = x1_min+(np.arange(ipixmin, ipixmax)+0.5)*pixwidthx1
+                x2pix = x2_min+(np.arange(jpixmin, jpixmax)+0.5)*pixwidthx2
+
+                x3_2 = x3_slice*x3_slice + x3_data[i]*x3_data[i]
+                x3_12 = x3_slice*x3_data[i]
+                dx1 = (x1pix - x1_data[i]).reshape(1, x1pix.size)
+                dx2 = (x2_data[i] - x2pix).reshape(x2pix.size, 1)
+
+                r2 = x3_2 - 2.0 * x3_12 * np.cos(dx1) + dx2*dx2
+
+                h1i = 1.0/h_data[i]
+                q = np.sqrt(r2)*h1i
+
+                for jpix in range(jpixmax - jpixmin):
+                    for ipix in range(ipixmax - ipixmin):
+                        if q[jpix][ipix] > kernel_radius:
+                            continue
+                        wab = weight_function(q[jpix][ipix], n_dims)
+                        jp = jpix + jpixmin
+                        ip = ipix + ipixmin
+                        output_local[thread][jp, ip] += term[i] * wab
+
+        for i in range(get_num_threads()):
+            output += output_local[i]
+
+        return output
 
     @staticmethod
     @njit(parallel=True, fastmath=True)
@@ -287,22 +528,23 @@ class CPUBackend(BaseBackend):
                     jpixmax = y_pixels
 
                 # precalculate differences in the x-direction (optimization)
-                dx2i = ((x_min + (np.arange(ipixmin, ipixmax) + 0.5)
-                         * pixwidthx - x_data[i])**2 + dz[i]**2) / h_data[i]**2
+                h1i = 1.0/h_data[i]
+                dx2i = (x_min + (np.arange(ipixmin, ipixmax) + 0.5)
+                        * pixwidthx - x_data[i])**2 + dz[i]**2
 
                 # determine differences in the y-direction
                 ypix = y_min + (np.arange(jpixmin, jpixmax) + 0.5) * pixwidthy
                 dy = ypix - y_data[i]
-                dy2 = dy * dy * (1 / (h_data[i] ** 2))
+                dy2 = dy * dy
 
                 # calculate contributions at pixels i, j from particle at x, y
-                q2 = dx2i + dy2.reshape(len(dy2), 1)
+                q = np.sqrt(dx2i + dy2.reshape(len(dy2), 1)) * h1i
 
                 for jpix in range(jpixmax - jpixmin):
                     for ipix in range(ipixmax - ipixmin):
-                        if np.sqrt(q2[jpix][ipix]) > kernel_radius:
+                        if q[jpix][ipix] > kernel_radius:
                             continue
-                        wab = weight_function(np.sqrt(q2[jpix][ipix]), n_dims)
+                        wab = weight_function(q[jpix][ipix], n_dims)
                         jp = jpix + jpixmin
                         ip = ipix + ipixmin
                         output_local[thread][jp, ip] += term[i] * wab

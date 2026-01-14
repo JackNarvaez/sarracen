@@ -175,3 +175,25 @@ class BaseBackend:
         Interpolate 3D data to a 3D grid of pixels.
         """
         return zeros((z_pixels, y_pixels, x_pixels))
+
+    @staticmethod
+    def interpolate_3d_mesh(x: ndarray,
+                            y: ndarray,
+                            z: ndarray,
+                            weight: ndarray,
+                            h: ndarray,
+                            weight_function: CPUDispatcher,
+                            kernel_radius: float,
+                            x_pixels: int,
+                            y_pixels: int,
+                            z_pixels: int,
+                            x_min: float,
+                            x_max: float,
+                            y_min: float,
+                            y_max: float,
+                            z_min: float,
+                            z_max: float) -> ndarray:
+        """
+        Interpolate 3D data to a 3D grid of pixels.
+        """
+        return zeros((z_pixels, y_pixels, x_pixels))

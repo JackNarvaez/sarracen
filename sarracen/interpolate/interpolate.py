@@ -1637,6 +1637,152 @@ def interpolate_3d_grid(data: 'SarracenDataFrame',  # noqa: F821
     return grid
 
 
+def interpolate_3d_mesh(data: 'SarracenDataFrame',  # noqa: F821
+                        target: str,
+                        x: Union[str, None] = None,
+                        y: Union[str, None] = None,
+                        z: Union[str, None] = None,
+                        kernel: Union[BaseKernel, None] = None,
+                        rotation: Union[np.ndarray, list,
+                                        Rotation, None] = None,
+                        rot_origin: Union[np.ndarray, list, str, None] = None,
+                        geometry: Union[str, None] = None,
+                        x_pixels: Union[int, None] = None,
+                        y_pixels: Union[int, None] = None,
+                        z_pixels: Union[int, None] = None,
+                        xlim: Optional[Tuple[Optional[float],
+                                             Optional[float]]] = None,
+                        ylim: Optional[Tuple[Optional[float],
+                                             Optional[float]]] = None,
+                        zlim: Union[Tuple[float, float], None] = None,
+                        backend: Union[str, None] = None,
+                        dens_weight: bool = False,
+                        normalize: bool = True,
+                        hmin: bool = False) -> np.ndarray:
+    """
+    Interpolate 3D particle data to a 3D grid of pixels
+
+    Interpolates particle data in a SarracenDataFrame across three directional
+    axes to a 3D grid of pixels. The contributions of all particles near each
+    3D cell are summed and stored in the 3D grid.
+
+    Parameters
+    ----------
+    data : SarracenDataFrame
+        The particle data to interpolate over.
+    target: str
+        The column label of the target data.
+    x, y, z: str, optional
+        The column labels of the directional data to interpolate over. Defaults
+        to the x, y, and z columns detected in `data`.
+    kernel: BaseKernel, optional
+        The kernel to use for smoothing the target data. Defaults to the kernel
+        specified in `data`.
+    rotation: array_like or SciPy Rotation, optional
+        The rotation to apply to the data before interpolation. If defined as
+        an array, the order of rotations is [z, y, x] in degrees.
+    rot_origin: array_like or ['com', 'midpoint'], optional
+        Point of rotation of the data. Only applies to 3D datasets. If
+        array_like, then the [x, y, z] coordinates specify the point around
+        which the data is rotated. If 'com', then data is rotated around the
+        centre of mass. If 'midpoint', then data is rotated around the
+        midpoint, that is, min + max / 2. Defaults to the midpoint.
+    geometry: str, optional
+        Coordinate system of the output grid. Can be 'cartesian',
+        'cylindrical', or 'spherical'. Defaults to 'cartesian'.
+    x_pixels, y_pixels, z_pixels: int, optional
+        Number of pixels in the output image in the x, y & z directions.
+        Default values are chosen to keep a consistent aspect ratio.
+    xlim, ylim, zlim: tuple of float, optional
+        The minimum and maximum values to use in interpolation, in particle
+        data space. Defaults to the minimum and maximum values of `x`, `y`
+        and `z`.
+    backend: ['cpu', 'gpu'], optional
+        The computation backend to use when interpolating this data. Defaults
+        to 'gpu' if CUDA is enabled, otherwise 'cpu' is used. A manually
+        specified backend in `data` will override the default.
+    dens_weight: bool, optional
+        If True, the target will be multiplied by density. Defaults to False.
+    normalize: bool, optional
+        If True, will normalize the interpolation. Defaults to True.
+    hmin: bool, optional
+        If True, a minimum smoothing length of 0.5 * pixel size will be
+        imposed. This ensures each particle contributes to at least one grid
+        cell / pixel. Defaults to False (this may change in a future verison).
+
+    Returns
+    -------
+    ndarray (3-Dimensional)
+        The interpolated output image, in a 3-dimensional numpy array.
+        Dimensions are structured in reverse order, where (x, y, z) ->
+        [z, y, x].
+
+    Raises
+    ------
+    ValueError
+        If `x_pixels`, `y_pixels` or `z_pixels` are less than or equal to zero,
+        or if the specified `x`, `y` and `z` minimum and maximum values result
+        in an invalid region, or if `data` is not 3-dimensional.
+    KeyError
+        If `target`, `x`, `y`, `z`, mass, density, or smoothing length columns
+        do not exist in `data`.
+    """
+    _check_dimension(data, 3)
+    x, y, z = _default_xyz(data, x, y, z)
+    _verify_columns(data, x, y)
+
+    w_data = _get_weight(data, target, dens_weight)
+
+    x_data, y_data, z_data = _rotate_xyz(data, x, y, z, rotation, rot_origin)
+    if not xlim:
+        xlim = (None, None)
+    if not ylim:
+        ylim = (None, None)
+    xlim, ylim = _default_bounds(x_data, y_data, xlim, ylim)
+    zlim = zlim if zlim else (z_data.min(), z_data.max())
+
+    x_pixels, y_pixels = _set_pixels(x_pixels, y_pixels, xlim, ylim)
+    if z_pixels is None:
+        dz = zlim[1] - zlim[0]
+        dx = xlim[1] - xlim[0]
+        z_pixels = int(np.rint(x_pixels * (dz / dx)))
+
+    _check_boundaries(x_pixels, y_pixels, xlim, ylim)
+    if zlim[1] - zlim[0] <= 0:
+        raise ValueError("`z_max` must be greater than `z_min`!")
+    if z_pixels <= 0:
+        raise ValueError("`z_pixels` must be greater than zero!")
+
+    kernel = kernel if kernel is not None else data.kernel
+    backend = backend if backend is not None else data.backend
+
+    h_data = _get_smoothing_lengths(data, hmin, x_pixels, y_pixels,
+                                    xlim, ylim)
+    geometry_i = get_geometry(geometry)
+    x1, x2, x3 = cart2coords(x_data, y_data, z_data, geometry_i)
+
+    grid = get_backend(backend)\
+        .interpolate_3d_mesh(x1, x2, x3, w_data, h_data, kernel.w,
+                             kernel.get_radius(),
+                             geometry_i,
+                             x_pixels, y_pixels, z_pixels,
+                             xlim[0], xlim[1], ylim[0], ylim[1],
+                             zlim[0], zlim[1])
+
+    if normalize:
+        w_norm = _get_weight(data, np.array([1] * len(w_data)), dens_weight)
+        norm_grid = get_backend(backend)\
+            .interpolate_3d_mesh(x1, x2, x3, w_norm, h_data,
+                                 kernel.w, kernel.get_radius(),
+                                 geometry_i,
+                                 x_pixels, y_pixels, z_pixels,
+                                 xlim[0], xlim[1], ylim[0],
+                                 ylim[1], zlim[0], zlim[1])
+        grid = np.nan_to_num(grid / norm_grid)
+
+    return grid
+
+
 def get_backend(code: str) -> Type[BaseBackend]:
     """
     Get the interpolation backend associated with a string code.
@@ -1656,3 +1802,37 @@ def get_backend(code: str) -> Type[BaseBackend]:
     if code == 'gpu':
         return GPUBackend
     raise ValueError("Invalid backend")
+
+
+def get_geometry(geometry: str) -> int:
+    if geometry is not None:
+        if geometry == "cartesian":
+            return 0
+        elif geometry == "cylindrical":
+            return 1
+        elif geometry == "spherical":
+            return 2
+        else:
+            ValueError("geometry not defined")
+
+
+def cart2coords(x_data: np.ndarray,
+                y_data: np.ndarray,
+                z_data: np.ndarray,
+                geometry_i: int
+                ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+
+    if geometry_i == 0:
+        return [x_data, y_data, z_data]
+    elif geometry_i == 1:
+        x1 = np.arctan2(y_data, x_data) % (2 * np.pi)
+        x3 = np.sqrt(x_data*x_data + y_data*y_data)
+        return [x1, z_data, x3]
+    elif geometry_i == 2:
+        x3 = np.sqrt(x_data*x_data + y_data*y_data + z_data*z_data)
+        x3 = np.maximum(x3, 1e-20)
+        x2 = np.arccos(z_data / x3)
+        x1 = np.arctan2(y_data, x_data) % (2 * np.pi)
+        return [x1, x2, x3]
+    else:
+        ValueError("geometry not defined")
